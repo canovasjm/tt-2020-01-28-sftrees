@@ -1,0 +1,129 @@
+# required libraries ------------------------------------------------------
+library(tidyverse)
+library(sf)
+library(ggpmthemes)
+library(osmdata)
+library(glue)
+library(ggtext)
+# PMassicotte code
+# https://github.com/PMassicotte/tidytuesday/blob/master/R/tidytuesday_2020_week05.R#L8
+
+# San Francisco shapefile -------------------------------------------------
+sf_shapefile <- curl::curl_download(
+  "https://data.sfgov.org/api/geospatial/pty2-tcw4?method=export&format=Shapefile",
+  destfile = tempfile(fileext = ".zip")
+)
+
+td <- tempdir()
+sf_shapefile <- unzip(sf_shapefile, exdir = td)
+
+sf <- st_read(td) %>%
+  mutate(name = as.character(name))
+
+sf_outline <- sf %>%
+  st_simplify() %>%
+  st_union() %>%
+  st_buffer(dist = 0.001)
+
+# Road --------------------------------------------------------------------
+
+roads <- st_bbox(sf) %>%
+  opq() %>%
+  add_osm_feature("highway") %>%
+  osmdata_sf()
+
+roads2 <- roads$osm_lines %>%
+  st_transform(st_crs(sf)) %>%
+  st_intersection(sf)
+
+# Stats -------------------------------------------------------------------
+
+trees <- sf_trees %>%
+  drop_na(longitude, latitude) %>%
+  filter(longitude >= -125) %>%
+  # sample_n(1e4) %>%
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326) %>%
+  st_transform(st_crs(sf))
+
+df <- sf %>%
+  st_join(trees)
+
+df_viz <- df %>%
+  # sample_n(1e3) %>%
+  group_by(name) %>%
+  summarise(
+    mean_height = mean(dbh, na.rm = TRUE),
+    n = n()
+  ) %>%
+  mutate(area = st_area(geometry)) %>%
+  mutate(area = units::set_units(area, km^2)) %>%
+  mutate(tree_density = n / area)
+
+# Plot --------------------------------------------------------------------
+
+subtitle <- glue(
+  "There are a total of **{nrow(sf_trees)} trees** in San Francisco regrouped into **{length(unique(sf_trees$species))} species**.<br>The district with the most number of trees is **{filter(df_viz, n == max(n)) %>% pull(name)}** whereas the one with<br>the least number of trees is **{filter(df_viz, n == min(n)) %>% pull(name) %>% .[1]}**."
+)
+
+p <- df_viz %>%
+  ggplot() +
+  geom_sf(aes(fill = n), color = "#333333", size = 0.25) +
+  rcartocolor::scale_fill_carto_c(
+    palette = "Mint",
+    labels = scales::label_number_auto(),
+    guide = guide_legend(
+      direction = "horizontal",
+      keyheight = unit(2, units = "mm"),
+      keywidth = unit(20, units = "mm"),
+      title.position = "top",
+      title.hjust = 0.5,
+      nrow = 1,
+      byrow = TRUE,
+      label.position = "bottom",
+      title = "Number of trees"
+    )
+  ) +
+  geom_sf(
+    data = sf_outline,
+    color = "gray80",
+    fill = NA,
+    size = 0.75
+  ) +
+  geom_sf(
+    data = roads2,
+    color = "#383838",
+    size = 0.05,
+    alpha = 0.25,
+    inherit.aes = FALSE
+  ) +
+  coord_sf(crs = 7131) +
+  scale_x_continuous(expand = c(0.15, 0.1)) +
+  # geom_sf_label(
+  #   data = parks,
+  #   aes(label = name)
+  # ) +
+  labs(
+    title = "Street trees of San Francisco",
+    subtitle = subtitle,
+    caption = "Tidytuesday 2020 week #5 | Data: data.sfgov.org | @philmassicotte"
+  ) +
+  theme(
+    legend.position = "bottom",
+    panel.border = element_blank(),
+    axis.text = element_text(
+      colour = "gray45",
+      family = "Roboto Condensed",
+      size = 8
+    ),
+    panel.grid = element_blank(),
+    axis.ticks = element_blank(),
+    plot.background = element_rect(fill = "#333333"),
+    panel.background = element_rect(fill = "#333333"),
+    legend.background = element_rect(fill = "#333333"),
+    legend.key = element_blank(),
+    legend.text = element_text(color = "white"),
+    legend.title = element_text(color = "white"),
+    plot.title = element_text(color = "white", hjust = 0.5, family = "Amaranth", size = 32),
+    plot.subtitle = element_markdown(color = "white", hjust = 0.5, family = "Titillium Web"),
+    plot.caption = element_text(color = "gray75", size = 8, hjust = 0.5)
+  )
